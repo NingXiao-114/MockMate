@@ -31,7 +31,7 @@ class RedisCache:
             return None
 
 
-    def set(self, key : str, value : Any , ttl : Optional[int] = None):
+    def set_json(self, key : str, value : Any , ttl : Optional[int] = None):
         try:
             payload = json.dumps(value ,ensure_ascii = False)
             self._get_client().setex(self._key(key), ttl or self.default_ttl , payload)
@@ -52,3 +52,5 @@ class RedisCache:
                 self._get_client().delete(*keys)
         except Exception:
             return None
+
+redis_cache = RedisCache()
