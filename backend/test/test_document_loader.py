@@ -6,7 +6,7 @@ import time
 
 from ..document_loader import DocumentsLoader
 
-FILE_DIR = os.path.join(os.path.dirname(__file__), "file")
+FILE_DIR = os.path.join(os.path.dirname(__file__), "files")
 
 
 def test_load_single_pdf():
