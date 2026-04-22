@@ -130,4 +130,5 @@ class ParentChunkStore:
         finally:
             db.close()
 
+parent_chunk_store = ParentChunkStore()
 
