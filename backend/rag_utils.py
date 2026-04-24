@@ -224,7 +224,7 @@ def retrieve_documents(query :str , top_k: int = 5)-> Dict[str,Any]:
     candidate_k = top_k * 3
     filter_expr = f"chunk_level == {LEAF_RETRIEVE_LEVEL}"
     try:
-        dense_embeddings =  embedding_service.getEmbeddings([query])
+        dense_embeddings =  embedding_service.get_embeddings([query])
         dense_embedding = dense_embeddings[0]
         sparse_embedding = embedding_service.get_sparse_embedding(query)
 
@@ -232,7 +232,7 @@ def retrieve_documents(query :str , top_k: int = 5)-> Dict[str,Any]:
             dense_embedding= dense_embedding,
             sparse_embedding= sparse_embedding,
             filter_expr=filter_expr,
-            candidate_k = candidate_k
+            top_k = candidate_k
         )
 
         reranked, rerank_meta = _rerank_documents(query=query, docs=retrieved, top_k=top_k)

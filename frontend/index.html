@@ -3,10 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>喵喵智能助手</title>
+    <title>MockMate - 智能面试伙伴</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230f2744'/><text y='72' x='50' text-anchor='middle' font-size='60' font-family='serif'>🤵</text></svg>">
     <link rel="stylesheet" href="style.css">
     <!-- Fonts -->
-    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&family=Zcool+KuaiLe&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
     <!-- Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <!-- Markdown Parser -->
@@ -23,8 +24,8 @@
         <!-- Sidebar -->
         <aside class="sidebar">
             <div class="sidebar-header">
-                <div class="logo-icon">🐱</div>
-                <h2>喵喵助手</h2>
+                <div class="logo-icon"><i class="fas fa-user-tie"></i></div>
+                <h2>MockMate</h2>
             </div>
             <nav class="sidebar-nav">
                 <button @click="handleNewChat" :class="['nav-btn', {active: activeNav === 'newChat'}]">
@@ -38,7 +39,7 @@
                 </button>
             </nav>
             <div class="sidebar-footer">
-                <button @click="handleClearChat" class="danger-btn">
+                <button v-if="isAuthenticated" @click="handleClearChat" class="danger-btn">
                     <i class="fas fa-trash-alt"></i> 清空当前对话
                 </button>
                 <div v-if="isAuthenticated" class="user-badge">
@@ -54,8 +55,8 @@
         <!-- Main Chat Area -->
         <main class="main-content">
             <div v-if="!isAuthenticated" class="auth-panel">
-                <h2>{{ authMode === 'login' ? '登录 SuperMew' : '注册 SuperMew' }}</h2>
-                <p>登录后即可使用聊天和历史记录；管理员可管理文档知识库。</p>
+                <h2>{{ authMode === 'login' ? '登录 MockMate' : '注册 MockMate' }}</h2>
+                <p>登录后即可开始面试练习；管理员可管理题库知识库。</p>
                 <div class="auth-form">
                     <input v-model="authForm.username" type="text" placeholder="用户名" />
                     <input v-model="authForm.password" type="password" placeholder="密码" />
@@ -96,7 +97,7 @@
                         <div v-if="selectedFile" class="selected-file">
                             <i class="fas fa-file"></i> {{ selectedFile.name }}
                             <button @click="uploadDocument" class="btn-primary" :disabled="isUploading">
-                                <i class="fas fa-upload"></i> {{ isUploading ? '上传中...' : '开始上传' }}
+                                <i class="fas fa-upload" style="color:#faf9f7;"></i> {{ isUploading ? '上传中...' : '开始上传' }}
                             </button>
                         </div>
                         <div v-if="uploadSteps.length" class="upload-progress" :class="{ collapsed: uploadProgressCollapsed }">
@@ -248,18 +249,18 @@
                 <header class="chat-header">
                     <div class="header-info">
                         <div class="status-dot"></div>
-                        <span>喵喵在线中...</span>
+                        <span>MockMate 在线中...</span>
                     </div>
                     <div class="header-actions">
-                        <button class="icon-btn" title="更多"><i class="fas fa-ellipsis-h"></i></button>
+                        <button class="icon-btn" title="历史记录" @click="handleHistory"><i class="fas fa-ellipsis-h"></i></button>
                     </div>
                 </header>
 
                 <div class="chat-container" ref="chatContainer">
                 <div v-if="messages.length === 0" class="welcome-screen">
-                    <div class="big-avatar">🐱</div>
-                    <h3>你好呀！我是喵喵</h3>
-                    <p>我可以帮你写代码、回答问题，或者只是陪你聊天~ 喵！</p>
+                    <div class="big-avatar"><i class="fas fa-user-tie" style="font-size:2.5rem;color:#c9a84c;"></i></div>
+                    <h3>你好！我是 MockMate，你的面试伙伴</h3>
+                    <p>我可以帮你模拟面试、解析题目、检索知识库，助你斩获 Offer。</p>
                 </div>
                 
                 <!-- Messages -->
@@ -416,14 +417,13 @@
 
             <div class="input-area-wrapper">
                 <div class="input-area">
-                    <button class="attach-btn"><i class="fas fa-paperclip"></i></button>
-                    <textarea 
-                        v-model="userInput" 
+                    <textarea
+                        v-model="userInput"
                         @keydown="handleKeyDown"
                         @compositionstart="handleCompositionStart"
                         @compositionend="handleCompositionEnd"
                         @input="autoResize"
-                        placeholder="和喵喵说点什么吧... (Shift+Enter 换行)" 
+                        placeholder="请输入问题... (Shift+Enter 换行)"
                         rows="1"
                         ref="textarea"
                     ></textarea>
@@ -439,6 +439,21 @@
             </div>
             <!-- End of Chat Area -->
         </main>
+
+        <!-- 自定义确认弹窗 -->
+        <div v-if="dialog.show" class="dialog-overlay" @click.self="dialog.reject">
+            <div class="dialog-box">
+                <div class="dialog-icon">
+                    <i :class="dialog.icon"></i>
+                </div>
+                <div class="dialog-title">{{ dialog.title }}</div>
+                <div class="dialog-message">{{ dialog.message }}</div>
+                <div class="dialog-actions">
+                    <button class="dialog-btn dialog-cancel" @click="dialog.reject">取消</button>
+                    <button class="dialog-btn dialog-confirm" @click="dialog.resolve">确认</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="script.js"></script>

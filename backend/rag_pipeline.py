@@ -173,7 +173,10 @@ def grade_documents_node(state: RAGState) -> RAGState:
     question = state["question"]
     context = state.get("context", "")
     prompt = GRADE_PROMPT.format(question=question, context=context)
-    response = grader.with_structured_output(GradeDocuments).invoke(
+    response = grader.with_structured_output(
+        GradeDocuments,
+        method="function_calling"
+    ).invoke(
         [{"role": "user", "content": prompt}]
     )
     score = (response.binary_score or "").strip().lower()

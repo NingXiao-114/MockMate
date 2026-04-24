@@ -112,6 +112,19 @@ async def get_session_messages(session_id: str, current_user: User = Depends(get
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.delete("/sessions/{session_id}", response_model=SessionDeleteResponse)
+async def delete_session(session_id: str, current_user: User = Depends(get_current_user)):
+    """删除当前用户的指定会话"""
+    try:
+        deleted = storage.delete_session(current_user.username, session_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        return SessionDeleteResponse(session_id=session_id, message="成功删除会话")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/sessions", response_model=SessionListResponse)
 async def list_sessions(current_user: User = Depends(get_current_user)):
     """获取当前用户的所有会话列表"""

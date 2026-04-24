@@ -54,7 +54,7 @@ class DocumentsLoader:
 
         root_chunks : list[dict] = []
         page_number = int(base_doc.get("page_number" ,  0))
-        file_name = base_doc["file_name"]
+        file_name = base_doc["filename"]
 
         level_1_docs = self._splitter_level_1.create_documents([text],[base_doc])
 
@@ -146,7 +146,7 @@ class DocumentsLoader:
             page_global_chunk_idx = 0
             for doc in raw_docs:
                 base_doc = {
-                    "file_name" : filename,
+                    "filename" : filename,
                     "file_path" : file_path,
                     "file_type" : doc_type,
                     "page_number" : page_global_chunk_idx,
