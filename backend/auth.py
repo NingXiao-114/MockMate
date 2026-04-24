@@ -15,7 +15,7 @@ from models import User
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "change-this-secret")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))
-ADMIN_INVITE_CODE = os.getenv("ADMIN_INVITE_CODE", "")
+ADMIN_INVITE_CODE = os.getenv("ADMIN_INVITE_CODE", "admin")
 PBKDF2_ROUNDS = int(os.getenv("PASSWORD_PBKDF2_ROUNDS", "310000"))
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")

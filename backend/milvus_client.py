@@ -208,6 +208,7 @@ class MilvusManager:
         """
         混合检索 - 使用 RRF 融合密集向量和稀疏向量的检索结果
 
+        :param filter_expr:
         :param dense_embedding: 密集向量
         :param sparse_embedding: 稀疏向量 {index: value, ...}
         :param top_k: 返回结果数量

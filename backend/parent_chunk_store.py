@@ -1,4 +1,5 @@
 """父级分块文档存储（用于 Auto-merging Retriever）"""
+import json
 from datetime import datetime
 from typing import List
 
@@ -36,13 +37,28 @@ class ParentChunkStore:
 
         db = SessionLocal()
         upserted = 0
-        try:
-            for doc in docs:
-                chunk_id = (doc.get("chunk_id") or "").strip()
-                if not chunk_id:
-                    continue
 
-                record = db.query(ParentChunk).filter(ParentChunk.chunk_id == chunk_id).first()
+        # 1. 预处理提取所有有效的 chunk_id
+        valid_docs = [doc for doc in docs if (doc.get("chunk_id") or "").strip()]
+
+        if not valid_docs:
+            return 0
+
+        chunk_ids = [doc["chunk_id"].strip() for doc in valid_docs]
+
+        try:
+
+            existing_records = db.query(ParentChunk).filter(ParentChunk.chunk_id.in_(chunk_ids)).all()
+            existing_map = {record.chunk_id: record for record in existing_records}
+
+            redis_pipeline = redis_cache._get_client().pipeline()
+            new_objects = []
+
+            for doc in valid_docs:
+
+                #record = db.query(ParentChunk).filter(ParentChunk.chunk_id == chunk_id).first()
+                chunk_id = doc["chunk_id"].strip()
+
                 payload = {
                     "text": doc.get("text", ""),
                     "filename": doc.get("filename", ""),
@@ -67,16 +83,22 @@ class ParentChunkStore:
                     "chunk_level": payload["chunk_level"],
                     "chunk_idx": payload["chunk_idx"],
                 }
-                if record:
+                if chunk_id in existing_map:
                     for key, value in payload.items():
+                        record = existing_map[chunk_id]
                         setattr(record, key, value)
                 else:
-                    db.add(ParentChunk(chunk_id=chunk_id, **payload))
-
-                redis_cache.set_json(self._cache_key(chunk_id), cache_payload)
+                    new_objects.append(ParentChunk(chunk_id=chunk_id, **payload))
+                    #db.add(ParentChunk(chunk_id=chunk_id, **payload))
+                #redis_cache.set_json(self._cache_key(chunk_id), cache_payload)
+                redis_pipeline.set(self._cache_key(chunk_id), json.dumps(cache_payload))
                 upserted += 1
 
+            if new_objects:
+                db.bulk_save_objects(new_objects)
+
             db.commit()
+            redis_pipeline.execute()
         finally:
             db.close()
 

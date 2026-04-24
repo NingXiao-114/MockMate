@@ -33,7 +33,15 @@ createApp({
                 role: 'user',
                 admin_code: ''
             },
-            authLoading: false
+            authLoading: false,
+            dialog: {
+                show: false,
+                title: '',
+                message: '',
+                icon: 'fas fa-exclamation-triangle',
+                resolve: null,
+                reject: null
+            }
         };
     },
     computed: {
@@ -60,6 +68,16 @@ createApp({
         Object.values(this.deleteRemoveTimers).forEach(timer => clearTimeout(timer));
     },
     methods: {
+        showConfirm({ title, message, icon = 'fas fa-exclamation-triangle' }) {
+            return new Promise((resolve, reject) => {
+                this.dialog = {
+                    show: true, title, message, icon,
+                    resolve: () => { this.dialog.show = false; resolve(true); },
+                    reject:  () => { this.dialog.show = false; reject(false); }
+                };
+            });
+        },
+
         configureMarked() {
             marked.setOptions({
                 highlight: function(code, lang) {
@@ -287,7 +305,7 @@ createApp({
                     }
                 } else {
                     this.messages[botMsgIdx].isThinking = false;
-                    this.messages[botMsgIdx].text = `喵呜... 出了点问题：${error.message}`;
+                    this.messages[botMsgIdx].text = `出了点问题：${error.message}`;
                 }
             } finally {
                 this.isLoading = false;
@@ -322,10 +340,15 @@ createApp({
             this.showHistorySidebar = false;
         },
 
-        handleClearChat() {
-            if (confirm('确定要清空当前对话吗？喵？')) {
+        async handleClearChat() {
+            try {
+                await this.showConfirm({
+                    title: '清空对话',
+                    message: '确定要清空当前对话吗？此操作不可撤销。',
+                    icon: 'fas fa-trash-alt'
+                });
                 this.messages = [];
-            }
+            } catch {}
         },
 
         async handleHistory() {
@@ -371,9 +394,13 @@ createApp({
         },
 
         async deleteSession(sessionId) {
-            if (!confirm(`确定要删除会话 "${sessionId}" 吗？`)) {
-                return;
-            }
+            try {
+                await this.showConfirm({
+                    title: '删除会话',
+                    message: `确定要删除该会话吗？`,
+                    icon: 'fas fa-history'
+                });
+            } catch { return; }
 
             try {
                 const response = await this.authFetch(`/sessions/${encodeURIComponent(sessionId)}`, {
@@ -754,9 +781,13 @@ createApp({
             if (this.isDeletingDocument(filename)) {
                 return;
             }
-            if (!confirm(`确定要删除文档 "${filename}" 吗？这将同时删除 Milvus 中的所有相关向量。`)) {
-                return;
-            }
+            try {
+                await this.showConfirm({
+                    title: '删除文档',
+                    message: `确定要删除「${filename}」吗？这将同时删除所有相关向量数据。`,
+                    icon: 'fas fa-file-alt'
+                });
+            } catch { return; }
 
             this.clearDeleteRemovalTimer(filename);
             this.setDeleteJob(filename, {
