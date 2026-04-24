@@ -8,10 +8,10 @@ from langchain.agents import create_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AIMessageChunk
 
-from backend.cache import redis_cache
-from backend.database import SessionLocal
-from backend.models import User, ChatSession, ChatMessage
-from backend.tools import search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
+from cache import redis_cache
+from database import SessionLocal
+from models import User, ChatSession, ChatMessage
+from tools import search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 
 load_dotenv()
 

@@ -7,18 +7,18 @@ from sqlalchemy.orm import Session
 from starlette.responses import StreamingResponse
 from document_loader import DocumentsLoader
 
-from backend import milvus_writer
-from backend.agent import storage, chat_with_agent, chat_with_agent_stream
-from backend.auth import get_db, resolve_role, get_password_hash, create_access_token, authenticate_user, \
+import milvus_writer
+from agent import storage, chat_with_agent, chat_with_agent_stream
+from auth import get_db, resolve_role, get_password_hash, create_access_token, authenticate_user, \
     get_current_user, require_admin
-from backend.embedding import embedding_service
-from backend.milvus_client import milvus_manager, MilvusManager
-from backend.milvus_writer import MilvusWriter
-from backend.models import User
+from embedding import embedding_service
+from milvus_client import milvus_manager, MilvusManager
+from milvus_writer import MilvusWriter
+from models import User
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, BackgroundTasks, File
 
-from backend.parent_chunk_store import parent_chunk_store, ParentChunkStore
-from backend.upload_jobs import upload_job_manager, delete_job_manager, DELETE_STEPS
+from parent_chunk_store import parent_chunk_store, ParentChunkStore
+from upload_jobs import upload_job_manager, delete_job_manager, DELETE_STEPS
 from schemas import (
     AuthResponse,
     ChatRequest,
