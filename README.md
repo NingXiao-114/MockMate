@@ -27,7 +27,6 @@
 | 向量数据库 | Milvus 2.5 |
 | 关系数据库 | PostgreSQL 15 |
 | 缓存 | Redis 7 |
-| 前端 | Vue 3（无构建工具） |
 | 容器化 | Docker Compose |
 
 ---
@@ -49,7 +48,7 @@ FastAPI 后端
    │             ├── 相关性评分
    │             ├── 查询重写（Step-back / HyDE）
    │             ├── Auto-merging
-   │             └── 可选 Reranking（Jina）
+   │             └── 可选 Reranking
    │
    ├── 文档处理
    │      ├── 三级分块（L1/L2/L3）
@@ -72,7 +71,7 @@ FastAPI 后端
 ### 1. 克隆项目
 
 ```bash
-git clone https://github.com/your-username/MyRagBot.git
+git clone https://github.com/NingXiao-114/MockMate.git
 cd MyRagBot
 ```
 
@@ -182,16 +181,6 @@ MyRagBot/
 ---
 
 ## 配置说明
-
-### 可选 Reranking
-
-配置 Jina Reranker 可进一步提升检索精度：
-
-```env
-RERANK_MODEL=jina-reranker-v3
-RERANK_BINDING_HOST=https://api.jina.ai/v1/rerank
-RERANK_API_KEY=your_jina_api_key
-```
 
 ### GPU 加速
 
