@@ -1,6 +1,6 @@
 """父级分块文档存储（用于 Auto-merging Retriever）"""
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List
 
 from cache import redis_cache
@@ -59,6 +59,8 @@ class ParentChunkStore:
                 #record = db.query(ParentChunk).filter(ParentChunk.chunk_id == chunk_id).first()
                 chunk_id = doc["chunk_id"].strip()
 
+                # 北京时间 UTC+8
+                BJT = timezone(timedelta(hours=8))
                 payload = {
                     "text": doc.get("text", ""),
                     "filename": doc.get("filename", ""),
@@ -69,7 +71,7 @@ class ParentChunkStore:
                     "root_chunk_id": doc.get("root_chunk_id", ""),
                     "chunk_level": int(doc.get("chunk_level", 0) or 0),
                     "chunk_idx": int(doc.get("chunk_idx", 0) or 0),
-                    "updated_at": datetime.utcnow(),
+                    "updated_at": datetime.now(BJT),
                 }
                 cache_payload = {
                     "chunk_id": chunk_id,

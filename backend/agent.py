@@ -1,7 +1,7 @@
 import asyncio
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AIMe
 from cache import redis_cache
 from database import SessionLocal
 from models import User, ChatSession, ChatMessage
-from tools import search_knowledge_base, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
+from tools import search_knowledge_base, web_search, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 
 load_dotenv()
 
@@ -66,28 +66,32 @@ class ConversationStorage:
                 session.metadata_json = metadata or {}
             db.query(ChatMessage).filter(ChatMessage.session_ref_id == session.id).delete(synchronize_session=False)
             serialized = []
-            now = datetime.utcnow()
+            # 北京时间 UTC+8
+            BJT = timezone(timedelta(hours=8))
+            now = datetime.now(BJT)
             for idx, msg in enumerate(messages):
+                rag_trace = None
                 if extra_message_data and idx < len(extra_message_data):
                     extra = extra_message_data[idx] or {}
                     rag_trace = extra.get("rag_trace")
-            db.add(
-                ChatMessage(
-                    session_ref_id=session.id,
-                    message_type=msg.type,
-                    content=str(msg.content),
-                    timestamp=now,
-                    rag_trace=rag_trace,
+                db.add(
+                    ChatMessage(
+                        session_ref_id=session.id,
+                        message_type=msg.type,
+                        content=str(msg.content),
+                        timestamp=now,
+                        rag_trace=rag_trace,
+                    )
                 )
-            )
-            serialized.append(
-                {
-                    "type": msg.type,
-                    "content": str(msg.content),
-                    "timestamp": now.isoformat(),
-                    "rag_trace": rag_trace,
-                }
-            )
+                serialized.append(
+                    {
+                        "type": msg.type,
+                        "content": str(msg.content),
+                        "timestamp": now.isoformat(),
+                        "rag_trace": rag_trace,
+                    }
+                )
+
             session.updated_at = now
             db.commit()
             redis_cache.set_json(self._messages_cache_key(user_id, session_id), serialized)
@@ -207,17 +211,23 @@ def create_agent_instance():
 
     agent = create_agent(
         model=model,
-        tools=[search_knowledge_base],
+        tools=[search_knowledge_base, web_search],
         system_prompt=(
-            "你是一个专业且富有鼓励精神的面试复习助手，致力于帮助用户准备求职面试。"
-            "在回答时，你可以使用工具来辅助。"
-            "当用户询问技术概念、行为面试题或面试准备资料时，请使用 search_knowledge_base 工具。"
-            "不要在同一轮对话中重复调用同一个工具。每轮对话最多调用一次知识库搜索工具。"
-            "一旦你调用了 search_knowledge_base 并收到结果，你必须立即基于该结果生成最终答案，以解释概念或解答面试问题。"
-            "在收到 search_knowledge_base 的结果后，你绝对不能再次调用任何工具（包括再次搜索知识库）。"
-            "如果检索到的上下文不足以回答该面试问题，请诚实地回答你没有足够的信息，而不是捏造技术事实或伪造面试指南。"
-            "如果工具返回的结果包含‘后退提问/解答’（Step-back Question/Answer），请运用该通用原则或核心概念来推理并解答面试问题，但不要向用户暴露你的思维链（chain-of-thought）。"
-            "如果你不知道答案，请诚实承认，并鼓励用户进一步探索该知识点。"
+            "你是一个专业且富有鼓励精神的面试复习助手，致力于帮助用户准备求职面试。\n\n"
+            "## 工具使用策略（严格按顺序执行）\n"
+            "1. 首先调用 search_knowledge_base 工具检索本地知识库。\n"
+            "2. 检索完成后，评估知识库内容是否足以回答用户的问题。\n"
+            "3. 如果知识库内容不足以回答（信息缺失、过时、或未覆盖该主题），则调用 web_search 工具进行联网搜索补充。\n"
+            "4. 如果知识库内容已足够回答，则无需调用 web_search。\n\n"
+            "## 回答规范\n"
+            "- 来自知识库的内容：直接回答，无需特别标注。\n"
+            "- 来自网络搜索的内容：必须在回答中明确标注「以下回答来自于网络」。\n"
+            "- 如果知识库和网络都无法回答，请诚实承认并鼓励用户进一步探索。\n\n"
+            "## 约束\n"
+            "- 不要在同一轮对话中重复调用同一个工具。每个工具每轮最多调用一次。\n"
+            "- 一旦收到工具结果，必须立即基于结果生成最终答案。\n"
+            "- 如果工具返回的结果包含「后退提问/解答」（Step-back Question/Answer），请运用该通用原则来推理解答，但不要暴露思维链。\n"
+            "- 不要捏造技术事实或伪造面试指南。"
         ),
     )
     return agent, model

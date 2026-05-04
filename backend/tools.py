@@ -1,6 +1,20 @@
+import json
+import os
 from typing import Optional
 
+import requests
+from dotenv import load_dotenv
 from langchain_core.tools import tool
+
+load_dotenv()
+
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
+_MCP_ENDPOINT = "https://dashscope.aliyuncs.com/api/v1/mcps/WebSearch/mcp"
+_MCP_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "text/event-stream",
+    "Authorization": f"Bearer {DASHSCOPE_API_KEY}",
+}
 
 _LAST_RAG_CONTEXT = None
 _KNOWLEDGE_TOOL_CALLS_THIS_TURN = 0
@@ -87,4 +101,97 @@ def search_knowledge_base(query: str) -> str:
       formatted.append(f"[{i}] {source} (Page {page}):\n{text}")
 
    return "Retrieved Chunks:\n" + "\n\n---\n\n".join(formatted)
+
+
+def _parse_mcp_sse_response(response: requests.Response) -> dict:
+    """解析 MCP SSE 响应，提取 JSON-RPC result。"""
+    result = None
+    for line in response.text.splitlines():
+        if not line.startswith("data: "):
+            continue
+        payload = line[6:]
+        try:
+            msg = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if "result" in msg:
+            result = msg["result"]
+        if "error" in msg:
+            raise RuntimeError(f"MCP error: {msg['error']}")
+    return result
+
+
+def call_mcp_tool(endpoint: str, headers: dict, tool_name: str, arguments: dict) -> str:
+    """调用 MCP HTTP 工具并返回文本结果。"""
+    # Step 1: initialize
+    init_payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {"name": "mockmate", "version": "1.0.0"},
+        },
+    }
+    resp = requests.post(endpoint, json=init_payload, headers=headers, timeout=30)
+    resp.raise_for_status()
+    session_id = resp.headers.get("Mcp-Session-Id")
+
+    # Step 2: notifications/initialized
+    notify_headers = {**headers}
+    if session_id:
+        notify_headers["Mcp-Session-Id"] = session_id
+    notify_payload = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    requests.post(endpoint, json=notify_payload, headers=notify_headers, timeout=10)
+
+    # Step 3: tools/call
+    call_headers = {**headers}
+    if session_id:
+        call_headers["Mcp-Session-Id"] = session_id
+    call_payload = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": arguments},
+    }
+    resp = requests.post(endpoint, json=call_payload, headers=call_headers, timeout=60)
+    resp.raise_for_status()
+
+    # 解析响应
+    content_type = resp.headers.get("Content-Type", "")
+    if "text/event-stream" in content_type:
+        result = _parse_mcp_sse_response(resp)
+    else:
+        result = resp.json().get("result")
+
+    if not result:
+        return "联网搜索未返回结果。"
+
+    # MCP tool result 格式: {"content": [{"type": "text", "text": "..."}]}
+    contents = result.get("content", [])
+    texts = [item.get("text", "") for item in contents if item.get("type") == "text"]
+    return "\n".join(texts) if texts else "联网搜索未返回结果。"
+
+
+@tool("web_search")
+def web_search(query: str) -> str:
+    """Search the internet for up-to-date information when the knowledge base cannot answer the question."""
+    if not DASHSCOPE_API_KEY:
+        return "联网搜索不可用：未配置 DASHSCOPE_API_KEY。"
+
+    emit_rag_step("🌐", "正在联网搜索...", f"查询: {query[:50]}")
+
+    try:
+        result = call_mcp_tool(
+            endpoint=_MCP_ENDPOINT,
+            headers=_MCP_HEADERS,
+            tool_name="bailian_web_search",
+            arguments={"query": query, "count": 5},
+        )
+        emit_rag_step("✅", "联网搜索完成", f"结果长度: {len(result)} 字符")
+        return result
+    except Exception as e:
+        emit_rag_step("❌", "联网搜索失败", str(e)[:80])
+        return f"联网搜索出错: {e}"
 

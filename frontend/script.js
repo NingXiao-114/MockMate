@@ -11,6 +11,7 @@ createApp({
             sessionId: 'session_' + Date.now(),
             sessions: [],
             showHistorySidebar: false,
+            showMobileSidebar: false,
             isComposing: false,
             documents: [],
             documentsLoading: false,
@@ -34,6 +35,9 @@ createApp({
                 admin_code: ''
             },
             authLoading: false,
+            showUserMenu: false,
+            sidebarCollapsed: false,
+            theme: localStorage.getItem('mm-theme') || 'light',
             dialog: {
                 show: false,
                 title: '',
@@ -54,6 +58,13 @@ createApp({
     },
     async mounted() {
         this.configureMarked();
+        this.initTheme();
+        this._closeUserMenu = (e) => {
+            if (!e.target.closest('.user-avatar-wrapper')) {
+                this.showUserMenu = false;
+            }
+        };
+        document.addEventListener('click', this._closeUserMenu);
         if (this.token) {
             try {
                 await this.fetchMe();
@@ -63,21 +74,45 @@ createApp({
         }
     },
     beforeUnmount() {
+        document.removeEventListener('click', this._closeUserMenu);
         this.stopUploadJobPolling();
         this.stopAllDeleteJobPolling();
         Object.values(this.deleteRemoveTimers).forEach(timer => clearTimeout(timer));
     },
     methods: {
+        /* ── Theme ── */
+        applyTheme() {
+            document.documentElement.setAttribute('data-theme', this.theme);
+        },
+
+        initTheme() {
+            const saved = localStorage.getItem('mm-theme');
+            if (saved) {
+                this.theme = saved;
+            } else if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+                this.theme = 'dark';
+            }
+            this.applyTheme();
+        },
+
+        toggleTheme() {
+            this.theme = this.theme === 'dark' ? 'light' : 'dark';
+            localStorage.setItem('mm-theme', this.theme);
+            this.applyTheme();
+        },
+
+        /* ── Dialog ── */
         showConfirm({ title, message, icon = 'fas fa-exclamation-triangle' }) {
             return new Promise((resolve, reject) => {
                 this.dialog = {
                     show: true, title, message, icon,
                     resolve: () => { this.dialog.show = false; resolve(true); },
-                    reject:  () => { this.dialog.show = false; reject(false); }
+                    reject: () => { this.dialog.show = false; reject(false); }
                 };
             });
         },
 
+        /* ── Markdown ── */
         configureMarked() {
             marked.setOptions({
                 highlight: function(code, lang) {
@@ -91,7 +126,8 @@ createApp({
         },
 
         parseMarkdown(text) {
-            return marked.parse(text);
+            const raw = marked.parse(text);
+            return DOMPurify.sanitize(raw, { ADD_ATTR: ['target'] });
         },
 
         escapeHtml(text) {
@@ -100,6 +136,21 @@ createApp({
             return div.innerHTML;
         },
 
+        /* ── Time formatting ── */
+        formatTime(timestamp) {
+            if (!timestamp) return '';
+            const d = new Date(timestamp);
+            const now = new Date();
+            const isToday = d.toDateString() === now.toDateString();
+            const hours = d.getHours().toString().padStart(2, '0');
+            const mins = d.getMinutes().toString().padStart(2, '0');
+            if (isToday) return `${hours}:${mins}`;
+            const month = d.getMonth() + 1;
+            const day = d.getDate();
+            return `${month}/${day} ${hours}:${mins}`;
+        },
+
+        /* ── Auth helpers ── */
         authHeaders(extra = {}) {
             const headers = { ...extra };
             if (this.token) {
@@ -121,9 +172,7 @@ createApp({
 
         async fetchMe() {
             const response = await this.authFetch('/auth/me');
-            if (!response.ok) {
-                throw new Error('认证失败');
-            }
+            if (!response.ok) throw new Error('认证失败');
             this.currentUser = await response.json();
         },
 
@@ -135,30 +184,21 @@ createApp({
                 alert('用户名和密码不能为空');
                 return;
             }
-
             this.authLoading = true;
             try {
                 const endpoint = this.authMode === 'login' ? '/auth/login' : '/auth/register';
-                const payload = {
-                    username,
-                    password
-                };
+                const payload = { username, password };
                 if (this.authMode === 'register') {
                     payload.role = this.authForm.role;
                     payload.admin_code = this.authForm.admin_code || null;
                 }
-
                 const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-
                 const data = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    throw new Error(data.detail || '认证失败');
-                }
-
+                if (!response.ok) throw new Error(data.detail || '认证失败');
                 this.token = data.access_token;
                 this.currentUser = { username: data.username, role: data.role };
                 localStorage.setItem('accessToken', this.token);
@@ -182,44 +222,43 @@ createApp({
             this.documents = [];
             this.activeNav = 'newChat';
             this.showHistorySidebar = false;
+            this.showMobileSidebar = false;
             localStorage.removeItem('accessToken');
         },
 
-        handleCompositionStart() {
-            this.isComposing = true;
-        },
-
-        handleCompositionEnd() {
-            this.isComposing = false;
-        },
+        /* ── Input ── */
+        handleCompositionStart() { this.isComposing = true; },
+        handleCompositionEnd() { this.isComposing = false; },
 
         handleKeyDown(event) {
             if (event.key === 'Enter' && !event.shiftKey && !this.isComposing) {
                 event.preventDefault();
                 this.handleSend();
             }
-        },
-
-        handleStop() {
-            if (this.abortController) {
-                this.abortController.abort();
+            if (event.key === 'n' && (event.ctrlKey || event.metaKey)) {
+                event.preventDefault();
+                this.handleNewChat();
             }
         },
 
+        handleStop() {
+            if (this.abortController) this.abortController.abort();
+        },
+
+        /* ── Chat ── */
         async handleSend() {
             if (!this.isAuthenticated) {
                 alert('请先登录');
                 return;
             }
-
             const text = this.userInput.trim();
             if (!text || this.isLoading || this.isComposing) return;
 
             this.messages.push({
-                text: text,
-                isUser: true
+                text,
+                isUser: true,
+                timestamp: new Date().toISOString()
             });
-
             this.userInput = '';
             this.$nextTick(() => {
                 this.resetTextareaHeight();
@@ -232,69 +271,62 @@ createApp({
                 isUser: false,
                 isThinking: true,
                 ragTrace: null,
-                ragSteps: []
+                ragSteps: [],
+                timestamp: null
             });
             const botMsgIdx = this.messages.length - 1;
-
             this.abortController = new AbortController();
 
             try {
                 const response = await this.authFetch('/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: text,
-                        session_id: this.sessionId
-                    }),
+                    body: JSON.stringify({ message: text, session_id: this.sessionId }),
                     signal: this.abortController.signal,
                 });
-
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
-
                 let buffer = '';
+
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-
                     buffer += decoder.decode(value, { stream: true });
 
                     let eventEndIndex;
                     while ((eventEndIndex = buffer.indexOf('\n\n')) !== -1) {
                         const eventStr = buffer.slice(0, eventEndIndex);
                         buffer = buffer.slice(eventEndIndex + 2);
-
-                        if (eventStr.startsWith('data: ')) {
-                            const dataStr = eventStr.slice(6);
-                            if (dataStr === '[DONE]') continue;
-                            try {
-                                const data = JSON.parse(dataStr);
-                                if (data.type === 'content') {
-                                    if (this.messages[botMsgIdx].isThinking) {
-                                        this.messages[botMsgIdx].isThinking = false;
-                                    }
-                                    this.messages[botMsgIdx].text += data.content;
-                                } else if (data.type === 'trace') {
-                                    this.messages[botMsgIdx].ragTrace = data.rag_trace;
-                                } else if (data.type === 'rag_step') {
-                                    if (!this.messages[botMsgIdx].ragSteps) {
-                                        this.messages[botMsgIdx].ragSteps = [];
-                                    }
-                                    this.messages[botMsgIdx].ragSteps.push(data.step);
-                                } else if (data.type === 'error') {
+                        if (!eventStr.startsWith('data: ')) continue;
+                        const dataStr = eventStr.slice(6);
+                        if (dataStr === '[DONE]') continue;
+                        try {
+                            const data = JSON.parse(dataStr);
+                            if (data.type === 'content') {
+                                if (this.messages[botMsgIdx].isThinking) {
                                     this.messages[botMsgIdx].isThinking = false;
-                                    this.messages[botMsgIdx].text += `\n[Error: ${data.content}]`;
+                                    this.messages[botMsgIdx].timestamp = new Date().toISOString();
                                 }
-                            } catch (e) {
-                                console.warn('SSE parse error:', e);
+                                this.messages[botMsgIdx].text += data.content;
+                            } else if (data.type === 'trace') {
+                                this.messages[botMsgIdx].ragTrace = data.rag_trace;
+                            } else if (data.type === 'rag_step') {
+                                if (!this.messages[botMsgIdx].ragSteps) {
+                                    this.messages[botMsgIdx].ragSteps = [];
+                                }
+                                this.messages[botMsgIdx].ragSteps.push(data.step);
+                            } else if (data.type === 'error') {
+                                this.messages[botMsgIdx].isThinking = false;
+                                this.messages[botMsgIdx].text += `\n[Error: ${data.content}]`;
                             }
+                        } catch (e) {
+                            console.warn('SSE parse error:', e);
                         }
                     }
-                    this.$nextTick(() => this.scrollToBottom());
+                    this.$nextTick(() => { if (this.isNearBottom()) this.scrollToBottom(); });
                 }
-
             } catch (error) {
                 if (error.name === 'AbortError') {
                     this.messages[botMsgIdx].isThinking = false;
@@ -317,13 +349,11 @@ createApp({
         autoResize(event) {
             const textarea = event.target;
             textarea.style.height = 'auto';
-            textarea.style.height = textarea.scrollHeight + 'px';
+            textarea.style.height = Math.min(textarea.scrollHeight, 120) + 'px';
         },
 
         resetTextareaHeight() {
-            if (this.$refs.textarea) {
-                this.$refs.textarea.style.height = 'auto';
-            }
+            if (this.$refs.textarea) this.$refs.textarea.style.height = 'auto';
         },
 
         scrollToBottom() {
@@ -332,12 +362,20 @@ createApp({
             }
         },
 
+        isNearBottom() {
+            const el = this.$refs.chatContainer;
+            if (!el) return true;
+            return el.scrollHeight - el.scrollTop - el.clientHeight < 150;
+        },
+
+        /* ── Navigation ── */
         handleNewChat() {
             if (!this.isAuthenticated) return;
             this.messages = [];
             this.sessionId = 'session_' + Date.now();
             this.activeNav = 'newChat';
             this.showHistorySidebar = false;
+            this.showMobileSidebar = false;
         },
 
         async handleClearChat() {
@@ -355,11 +393,10 @@ createApp({
             if (!this.isAuthenticated) return;
             this.activeNav = 'history';
             this.showHistorySidebar = true;
+            this.showMobileSidebar = false;
             try {
                 const response = await this.authFetch('/sessions');
-                if (!response.ok) {
-                    throw new Error('Failed to load sessions');
-                }
+                if (!response.ok) throw new Error('Failed to load sessions');
                 const data = await response.json();
                 this.sessions = data.sessions;
             } catch (error) {
@@ -371,22 +408,17 @@ createApp({
             this.sessionId = sessionId;
             this.showHistorySidebar = false;
             this.activeNav = 'newChat';
-
             try {
                 const response = await this.authFetch(`/sessions/${encodeURIComponent(sessionId)}`);
-                if (!response.ok) {
-                    throw new Error('Failed to load session messages');
-                }
+                if (!response.ok) throw new Error('Failed to load session messages');
                 const data = await response.json();
                 this.messages = data.messages.map(msg => ({
                     text: msg.content,
                     isUser: msg.type === 'human',
-                    ragTrace: msg.rag_trace || null
+                    ragTrace: msg.rag_trace || null,
+                    timestamp: msg.timestamp || null
                 }));
-
-                this.$nextTick(() => {
-                    this.scrollToBottom();
-                });
+                this.$nextTick(() => this.scrollToBottom());
             } catch (error) {
                 alert('加载会话失败：' + error.message);
                 this.messages = [];
@@ -397,37 +429,26 @@ createApp({
             try {
                 await this.showConfirm({
                     title: '删除会话',
-                    message: `确定要删除该会话吗？`,
+                    message: '确定要删除该会话吗？',
                     icon: 'fas fa-history'
                 });
             } catch { return; }
-
             try {
-                const response = await this.authFetch(`/sessions/${encodeURIComponent(sessionId)}`, {
-                    method: 'DELETE'
-                });
-
+                const response = await this.authFetch(`/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
                 const payload = await response.json().catch(() => ({}));
-                if (!response.ok) {
-                    throw new Error(payload.detail || 'Delete failed');
-                }
-
+                if (!response.ok) throw new Error(payload.detail || 'Delete failed');
                 this.sessions = this.sessions.filter(s => s.session_id !== sessionId);
-
                 if (this.sessionId === sessionId) {
                     this.messages = [];
                     this.sessionId = 'session_' + Date.now();
                     this.activeNav = 'newChat';
-                }
-
-                if (payload.message) {
-                    alert(payload.message);
                 }
             } catch (error) {
                 alert('删除会话失败：' + error.message);
             }
         },
 
+        /* ── Settings / Documents ── */
         handleSettings() {
             if (!this.isAdmin) {
                 alert('仅管理员可访问文档管理');
@@ -435,6 +456,7 @@ createApp({
             }
             this.activeNav = 'settings';
             this.showHistorySidebar = false;
+            this.showMobileSidebar = false;
             this.loadDocuments();
         },
 
@@ -443,12 +465,9 @@ createApp({
             Object.keys(this.deleteJobs).forEach(filename => {
                 const job = this.deleteJobs[filename];
                 if (!job || job.status === 'failed') return;
-                const exists = merged.some(doc => doc.filename === filename);
-                if (!exists) {
+                if (!merged.some(doc => doc.filename === filename)) {
                     const currentDoc = this.documents.find(doc => doc.filename === filename);
-                    if (currentDoc) {
-                        merged.push(currentDoc);
-                    }
+                    if (currentDoc) merged.push(currentDoc);
                 }
             });
             return merged;
@@ -493,16 +512,13 @@ createApp({
         },
 
         updateUploadStep(key, percent, status = 'running', message = '') {
-            if (!this.uploadSteps.length) {
-                this.uploadSteps = this.createUploadSteps();
-            }
+            if (!this.uploadSteps.length) this.uploadSteps = this.createUploadSteps();
             const idx = this.uploadSteps.findIndex(step => step.key === key);
             if (idx === -1) return;
             this.uploadSteps[idx] = {
                 ...this.uploadSteps[idx],
                 percent: Math.max(0, Math.min(100, Math.round(percent || 0))),
-                status,
-                message
+                status, message
             };
         },
 
@@ -511,41 +527,32 @@ createApp({
                 const xhr = new XMLHttpRequest();
                 const formData = new FormData();
                 formData.append('file', file);
-
                 xhr.open('POST', '/documents/upload/async');
                 const headers = this.authHeaders();
                 Object.entries(headers).forEach(([key, value]) => xhr.setRequestHeader(key, value));
-
                 xhr.upload.onprogress = (event) => {
                     if (!event.lengthComputable) return;
                     const percent = Math.round((event.loaded / event.total) * 100);
                     this.updateUploadStep('upload', percent, 'running', `已上传 ${percent}%`);
                 };
-
                 xhr.onload = () => {
                     if (xhr.status === 401) {
                         this.handleLogout();
                         reject(new Error('登录已过期，请重新登录'));
                         return;
                     }
-
                     let data = {};
-                    try {
-                        data = JSON.parse(xhr.responseText || '{}');
-                    } catch (e) {
+                    try { data = JSON.parse(xhr.responseText || '{}'); } catch {
                         reject(new Error('上传响应解析失败'));
                         return;
                     }
-
                     if (xhr.status < 200 || xhr.status >= 300) {
                         reject(new Error(data.detail || `HTTP ${xhr.status}`));
                         return;
                     }
-
                     this.updateUploadStep('upload', 100, 'completed', '文档上传完成');
                     resolve(data);
                 };
-
                 xhr.onerror = () => reject(new Error('上传请求失败'));
                 xhr.onabort = () => reject(new Error('上传已取消'));
                 xhr.send(formData);
@@ -557,17 +564,12 @@ createApp({
             this.uploadProgress = job.message || '';
             if (Array.isArray(job.steps)) {
                 this.uploadSteps = job.steps.map(step => ({
-                    key: step.key,
-                    label: step.label,
-                    percent: step.percent,
-                    status: step.status,
+                    key: step.key, label: step.label,
+                    percent: step.percent, status: step.status,
                     message: step.message || ''
                 }));
             }
-            // 入库成功后自动收起步骤明细，保留摘要供用户再次展开查看。
-            if (job.status === 'completed') {
-                this.uploadProgressCollapsed = true;
-            }
+            if (job.status === 'completed') this.uploadProgressCollapsed = true;
         },
 
         toggleUploadProgressCollapsed() {
@@ -583,7 +585,6 @@ createApp({
 
         startUploadJobPolling(jobId) {
             this.stopUploadJobPolling();
-
             const poll = async () => {
                 try {
                     const response = await this.authFetch(`/documents/upload/jobs/${encodeURIComponent(jobId)}`);
@@ -591,17 +592,13 @@ createApp({
                         const error = await response.json().catch(() => ({}));
                         throw new Error(error.detail || 'Failed to load upload job');
                     }
-
                     const job = await response.json();
                     this.syncUploadJob(job);
-
                     if (job.status === 'completed') {
                         this.stopUploadJobPolling();
                         this.isUploading = false;
                         this.selectedFile = null;
-                        if (this.$refs.fileInput) {
-                            this.$refs.fileInput.value = '';
-                        }
+                        if (this.$refs.fileInput) this.$refs.fileInput.value = '';
                         await this.loadDocuments();
                     } else if (job.status === 'failed') {
                         this.stopUploadJobPolling();
@@ -613,7 +610,6 @@ createApp({
                     this.isUploading = false;
                 }
             };
-
             poll();
             this.uploadPollTimer = setInterval(poll, 1000);
         },
@@ -623,13 +619,11 @@ createApp({
                 alert('请先选择文件');
                 return;
             }
-
             this.isUploading = true;
             this.uploadProgress = '正在上传...';
             this.uploadSteps = this.createUploadSteps();
             this.uploadProgressCollapsed = false;
             this.updateUploadStep('upload', 0, 'running', '准备上传');
-
             try {
                 const data = await this.uploadFileWithProgress(this.selectedFile);
                 this.uploadProgress = data.message;
@@ -671,26 +665,20 @@ createApp({
         setDeleteJob(filename, nextJob) {
             this.deleteJobs = {
                 ...this.deleteJobs,
-                [filename]: {
-                    ...(this.deleteJobs[filename] || {}),
-                    ...nextJob
-                }
+                [filename]: { ...(this.deleteJobs[filename] || {}), ...nextJob }
             };
         },
 
         syncDeleteJob(filename, job) {
             const current = this.deleteJobs[filename] || {};
-            // 后端返回统一的步骤结构，前端只负责同步到当前文档行内卡片。
             this.setDeleteJob(filename, {
                 jobId: job.job_id,
                 status: job.status,
                 message: job.message || '',
                 collapsed: job.status === 'completed' ? true : Boolean(current.collapsed),
                 steps: Array.isArray(job.steps) ? job.steps.map(step => ({
-                    key: step.key,
-                    label: step.label,
-                    percent: step.percent,
-                    status: step.status,
+                    key: step.key, label: step.label,
+                    percent: step.percent, status: step.status,
                     message: step.message || ''
                 })) : this.createDeleteSteps()
             });
@@ -724,7 +712,6 @@ createApp({
 
         scheduleDeletedDocumentRemoval(filename) {
             this.clearDeleteRemovalTimer(filename);
-            // 删除完成后先保留 3 秒摘要，再从当前列表移除并刷新后端状态。
             const timer = setTimeout(async () => {
                 this.documents = this.documents.filter(doc => doc.filename !== filename);
                 const { [filename]: _job, ...jobs } = this.deleteJobs;
@@ -733,15 +720,11 @@ createApp({
                 this.deleteRemoveTimers = timers;
                 await this.loadDocuments();
             }, 3000);
-            this.deleteRemoveTimers = {
-                ...this.deleteRemoveTimers,
-                [filename]: timer
-            };
+            this.deleteRemoveTimers = { ...this.deleteRemoveTimers, [filename]: timer };
         },
 
         startDeleteJobPolling(filename, jobId) {
             this.stopDeleteJobPolling(filename);
-
             const poll = async () => {
                 try {
                     const response = await this.authFetch(`/documents/delete/jobs/${encodeURIComponent(jobId)}`);
@@ -749,10 +732,8 @@ createApp({
                         const error = await response.json().catch(() => ({}));
                         throw new Error(error.detail || 'Failed to load delete job');
                     }
-
                     const job = await response.json();
                     this.syncDeleteJob(filename, job);
-
                     if (job.status === 'completed') {
                         this.stopDeleteJobPolling(filename);
                         this.scheduleDeletedDocumentRemoval(filename);
@@ -769,18 +750,12 @@ createApp({
                     this.stopDeleteJobPolling(filename);
                 }
             };
-
             poll();
-            this.deletePollTimers = {
-                ...this.deletePollTimers,
-                [filename]: setInterval(poll, 1000)
-            };
+            this.deletePollTimers = { ...this.deletePollTimers, [filename]: setInterval(poll, 1000) };
         },
 
         async deleteDocument(filename) {
-            if (this.isDeletingDocument(filename)) {
-                return;
-            }
+            if (this.isDeletingDocument(filename)) return;
             try {
                 await this.showConfirm({
                     title: '删除文档',
@@ -788,29 +763,23 @@ createApp({
                     icon: 'fas fa-file-alt'
                 });
             } catch { return; }
-
             this.clearDeleteRemovalTimer(filename);
             this.setDeleteJob(filename, {
                 status: 'running',
                 message: '正在提交删除任务...',
                 collapsed: false,
-                steps: this.createDeleteSteps().map(step => (
+                steps: this.createDeleteSteps().map(step =>
                     step.key === 'prepare'
                         ? { ...step, percent: 1, status: 'running', message: '正在提交删除任务' }
                         : step
-                ))
+                )
             });
-
             try {
-                const response = await this.authFetch(`/documents/delete/async/${encodeURIComponent(filename)}`, {
-                    method: 'DELETE'
-                });
-
+                const response = await this.authFetch(`/documents/delete/async/${encodeURIComponent(filename)}`, { method: 'DELETE' });
                 if (!response.ok) {
                     const error = await response.json().catch(() => ({}));
                     throw new Error(error.detail || 'Delete failed');
                 }
-
                 const data = await response.json();
                 this.setDeleteJob(filename, {
                     jobId: data.job_id,
@@ -819,7 +788,6 @@ createApp({
                     collapsed: false
                 });
                 this.startDeleteJobPolling(filename, data.job_id);
-
             } catch (error) {
                 this.setDeleteJob(filename, {
                     status: 'failed',
@@ -831,24 +799,10 @@ createApp({
         },
 
         getFileIcon(fileType) {
-            if (fileType === 'PDF') {
-                return 'fas fa-file-pdf';
-            } else if (fileType === 'Word') {
-                return 'fas fa-file-word';
-            } else if (fileType === 'Excel') {
-                return 'fas fa-file-excel';
-            }
+            if (fileType === 'PDF') return 'fas fa-file-pdf';
+            if (fileType === 'Word') return 'fas fa-file-word';
+            if (fileType === 'Excel') return 'fas fa-file-excel';
             return 'fas fa-file';
-        }
-    },
-    watch: {
-        messages: {
-            handler() {
-                this.$nextTick(() => {
-                    this.scrollToBottom();
-                });
-            },
-            deep: true
         }
     }
 }).mount('#app');

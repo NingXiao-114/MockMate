@@ -5,7 +5,7 @@
 
 """
 from copy import deepcopy
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Literal
 from uuid import uuid4
@@ -29,7 +29,9 @@ DELETE_STEPS = [
 ]
 
 def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
+    # 北京时间 UTC+8
+    BJT = timezone(timedelta(hours=8))
+    return datetime.now(BJT).isoformat()
 
 class UploadJobManager:
     """线程安全的上传任务状态容器。"""
