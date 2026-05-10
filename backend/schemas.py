@@ -104,6 +104,14 @@ class SessionDeleteResponse(BaseModel):
     message: str
 
 
+class SessionAttachmentUploadResponse(BaseModel):
+    session_id: str
+    filename: str
+    url: str
+    content_type: Optional[str] = None
+    size: int
+
+
 class DocumentInfo(BaseModel):
     filename: str
     file_type: str

@@ -1,10 +1,11 @@
 import json
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
-from starlette.responses import StreamingResponse
+from starlette.responses import FileResponse, StreamingResponse
 from document_loader import DocumentsLoader
 
 import milvus_writer
@@ -14,7 +15,7 @@ from auth import get_db, resolve_role, get_password_hash, create_access_token, a
 from embedding import embedding_service
 from milvus_client import milvus_manager, MilvusManager
 from milvus_writer import MilvusWriter
-from models import User
+from models import ChatSession, User
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, BackgroundTasks, File
 
 from parent_chunk_store import parent_chunk_store, ParentChunkStore
@@ -35,6 +36,7 @@ from schemas import (
     LoginRequest,
     MessageInfo,
     RegisterRequest,
+    SessionAttachmentUploadResponse,
     SessionDeleteResponse,
     SessionInfo,
     SessionListResponse,
@@ -45,6 +47,21 @@ from schemas import (
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR.parent / "data"
 UPLOAD_DIR = DATA_DIR / "documents"
+MAX_SESSION_ATTACHMENT_SIZE = 20 * 1024 * 1024
+SESSION_ID_PATTERN = re.compile(r"^session_\d+$")
+SUPPORTED_SESSION_ATTACHMENT_EXTENSIONS = {
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".gif",
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+}
+BJT = timezone(timedelta(hours=8))
 
 loader =  DocumentsLoader()
 parent_chunk_store = ParentChunkStore()
@@ -62,6 +79,103 @@ def _remove_bm25_stats_for_filename(filename: str) -> None:
     embedding_service.increment_remove_documents(texts)
 
 router = APIRouter()
+
+# undo-test marker
+def _now_bjt() -> datetime:
+    return datetime.now(BJT)
+
+
+def _validate_session_id(session_id: str) -> str:
+    session_id = (session_id or "").strip()
+    if not session_id or not SESSION_ID_PATTERN.fullmatch(session_id):
+        raise HTTPException(status_code=400, detail="session_id 只能包含字母、数字、下划线和短横线")
+    return session_id
+
+
+def _safe_upload_filename(filename: str | None) -> str:
+    safe_name = Path(filename or "").name.strip()
+    if not safe_name or safe_name in {".", ".."}:
+        raise HTTPException(status_code=400, detail="文件名不能为空")
+    if Path(safe_name).suffix.lower() not in SUPPORTED_SESSION_ATTACHMENT_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="仅支持图片、PDF、Word 和 Excel 附件")
+    return safe_name
+
+
+def _session_attachment_dir(session_id: str) -> Path:
+    return DATA_DIR / session_id
+
+
+def _resolve_session_attachment_path(session_id: str, filename: str) -> Path:
+    safe_session_id = _validate_session_id(session_id)
+    safe_filename = _safe_upload_filename(filename)
+    attachment_dir = _session_attachment_dir(safe_session_id).resolve()
+    file_path = (attachment_dir / safe_filename).resolve()
+    if attachment_dir not in file_path.parents:
+        raise HTTPException(status_code=400, detail="非法文件路径")
+    return file_path
+
+
+def _unique_attachment_path(directory: Path, filename: str) -> Path:
+    candidate = directory / filename
+    if not candidate.exists():
+        return candidate
+
+    path = Path(filename)
+    timestamp = _now_bjt().strftime("%Y%m%d%H%M%S")
+    for index in range(1, 1000):
+        suffix = f"_{timestamp}" if index == 1 else f"_{timestamp}_{index}"
+        candidate = directory / f"{path.stem}{suffix}{path.suffix}"
+        if not candidate.exists():
+            return candidate
+    raise HTTPException(status_code=500, detail="无法生成可用的附件文件名")
+
+
+def _get_or_create_owned_session(db: Session, current_user: User, session_id: str) -> ChatSession:
+    owner_session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+    if owner_session and owner_session.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+    if owner_session:
+        owner_session.updated_at = _now_bjt()
+        return owner_session
+
+    session = ChatSession(user_id=current_user.id, session_id=session_id, metadata_json={})
+    db.add(session)
+    db.flush()
+    return session
+
+
+def _ensure_owned_session(db: Session, current_user: User, session_id: str) -> ChatSession:
+    session = (
+        db.query(ChatSession)
+        .filter(ChatSession.session_id == session_id, ChatSession.user_id == current_user.id)
+        .first()
+    )
+    if not session:
+        other_session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+        if other_session:
+            raise HTTPException(status_code=403, detail="无权访问该会话")
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return session
+
+
+def _guess_session_attachment_media_type(file_path: Path) -> str | None:
+    suffix = file_path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".gif":
+        return "image/gif"
+    if suffix == ".pdf":
+        return "application/pdf"
+    if suffix in {".doc", ".docx"}:
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if suffix in {".xls", ".xlsx"}:
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    return None
+
 
 @router.post("/auth/register", response_model=AuthResponse)
 async def register(request: RegisterRequest, db: Session = Depends(get_db)):
@@ -111,6 +225,86 @@ async def get_session_messages(session_id: str, current_user: User = Depends(get
         return SessionMessagesResponse(messages=messages)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/sessions/{session_id}/attachments", response_model=SessionAttachmentUploadResponse)
+async def upload_session_attachment(
+    session_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    safe_session_id = _validate_session_id(session_id)
+    safe_filename = _safe_upload_filename(file.filename)
+
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        attachment_dir = _session_attachment_dir(safe_session_id)
+        attachment_dir.mkdir(parents=True, exist_ok=True)
+
+        session = _get_or_create_owned_session(db, current_user, safe_session_id)
+        file_path = _unique_attachment_path(attachment_dir, safe_filename)
+
+        total_size = 0
+        with open(file_path, "wb") as buffer:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total_size += len(chunk)
+                if total_size > MAX_SESSION_ATTACHMENT_SIZE:
+                    try:
+                        file_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    raise HTTPException(status_code=400, detail="附件大小不能超过 20MB")
+                buffer.write(chunk)
+
+        session.updated_at = _now_bjt()
+        db.commit()
+
+        return SessionAttachmentUploadResponse(
+            session_id=safe_session_id,
+            filename=file_path.name,
+            url=f"/sessions/{safe_session_id}/attachments/{file_path.name}",
+            content_type=file.content_type,
+            size=total_size,
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"附件上传失败: {str(e)}")
+    finally:
+        try:
+            await file.close()
+        except Exception:
+            pass
+
+
+@router.get("/sessions/{session_id}/attachments/{filename}")
+async def download_session_attachment(
+    session_id: str,
+    filename: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    safe_session_id = _validate_session_id(session_id)
+    safe_filename = _safe_upload_filename(filename)
+    session = _ensure_owned_session(db, current_user, safe_session_id)
+
+    file_path = _resolve_session_attachment_path(safe_session_id, safe_filename)
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="附件不存在")
+
+    session.updated_at = _now_bjt()
+    db.commit()
+
+    return FileResponse(
+        path=str(file_path),
+        media_type=_guess_session_attachment_media_type(file_path),
+        filename=file_path.name,
+    )
 
 @router.delete("/sessions/{session_id}", response_model=SessionDeleteResponse)
 async def delete_session(session_id: str, current_user: User = Depends(get_current_user)):
