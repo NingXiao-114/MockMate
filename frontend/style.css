@@ -1446,6 +1446,95 @@ textarea::placeholder {
     width: 100%;
 }
 
+/* ── Chat Attachments ── */
+.attachment-preview-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 800px;
+    width: 100%;
+    margin-bottom: 8px;
+}
+
+.attachment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: var(--bg-muted);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+    max-width: 220px;
+    animation: fadeIn 0.2s ease;
+}
+
+.attachment-chip i.fa-paperclip {
+    color: var(--primary-400);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.attachment-chip .att-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.attachment-chip .att-progress {
+    color: var(--primary-500);
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+.attachment-chip .att-error {
+    color: var(--danger);
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+.att-remove {
+    background: none;
+    border: none;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 2px;
+    flex-shrink: 0;
+    transition: color var(--transition-fast);
+}
+
+.att-remove:hover {
+    color: var(--danger);
+}
+
+/* ── Message Attachments (in user bubble) ── */
+.msg-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.msg-att-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.9);
+}
+
+.msg-att-chip i {
+    font-size: 10px;
+}
+
 /* ============================================
    History Sidebar
    ============================================ */

@@ -25,6 +25,7 @@ createApp({
             deleteJobs: {},
             deletePollTimers: {},
             deleteRemoveTimers: {},
+            chatAttachments: [],
             token: localStorage.getItem('accessToken') || '',
             currentUser: null,
             authMode: 'login',
@@ -245,6 +246,64 @@ createApp({
             if (this.abortController) this.abortController.abort();
         },
 
+        /* ── Chat Attachments ── */
+        triggerAttachmentInput() {
+            this.$refs.chatFileInput.click();
+        },
+
+        handleChatAttachmentSelect(event) {
+            const files = event.target.files;
+            if (!files) return;
+            for (const file of files) {
+                this.uploadChatAttachment(file);
+            }
+            event.target.value = '';
+        },
+
+        uploadChatAttachment(file) {
+            const att = { name: file.name, filename: null, uploading: true, progress: 0, error: null };
+            this.chatAttachments.push(att);
+            const idx = this.chatAttachments.length - 1;
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', `/sessions/${this.sessionId}/attachments`);
+            if (this.token) {
+                xhr.setRequestHeader('Authorization', `Bearer ${this.token}`);
+            }
+
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    this.chatAttachments[idx].progress = Math.round((e.loaded / e.total) * 100);
+                }
+            };
+
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    const resp = JSON.parse(xhr.responseText);
+                    this.chatAttachments[idx].filename = resp.filename;
+                    this.chatAttachments[idx].uploading = false;
+                    this.chatAttachments[idx].progress = 100;
+                } else {
+                    this.chatAttachments[idx].uploading = false;
+                    this.chatAttachments[idx].error = '上传失败';
+                }
+            };
+
+            xhr.onerror = () => {
+                this.chatAttachments[idx].uploading = false;
+                this.chatAttachments[idx].error = '网络错误';
+            };
+
+            xhr.send(formData);
+        },
+
+        removeChatAttachment(index) {
+            this.chatAttachments.splice(index, 1);
+        },
+
         /* ── Chat ── */
         async handleSend() {
             if (!this.isAuthenticated) {
@@ -254,12 +313,18 @@ createApp({
             const text = this.userInput.trim();
             if (!text || this.isLoading || this.isComposing) return;
 
+            const validAttachments = this.chatAttachments.filter(a => !a.uploading && !a.error && a.filename);
+            const attachments = validAttachments.map(a => a.filename);
+            const displayNames = validAttachments.map(a => a.name);
+
             this.messages.push({
                 text,
                 isUser: true,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                attachments: displayNames.length ? displayNames : null,
             });
             this.userInput = '';
+            this.chatAttachments = [];
             this.$nextTick(() => {
                 this.resetTextareaHeight();
                 this.scrollToBottom();
@@ -281,7 +346,7 @@ createApp({
                 const response = await this.authFetch('/chat/stream', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: text, session_id: this.sessionId }),
+                    body: JSON.stringify({ message: text, session_id: this.sessionId, attachments }),
                     signal: this.abortController.signal,
                 });
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);

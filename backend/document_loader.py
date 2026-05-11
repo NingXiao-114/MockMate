@@ -162,6 +162,22 @@ class DocumentsLoader:
         except Exception as e:
             raise Exception(f"处理文件{filename}失败:{str(e)}")
 
+    def load_document_text(self, file_path: str, filename: str) -> str:
+        """加载文档并返回完整文本，不做分块。用于临时附件。"""
+        file_lower = filename.lower()
+
+        if file_lower.endswith(".pdf"):
+            loader = PyPDFLoader(file_path)
+        elif file_lower.endswith((".docx", ".doc")):
+            loader = Docx2txtLoader(file_path)
+        elif file_lower.endswith((".xlsx", ".xls")):
+            loader = UnstructuredExcelLoader(file_path)
+        else:
+            raise ValueError(f"不支持的文件类型: {filename}")
+
+        raw_docs = loader.load()
+        return "\n\n".join((doc.page_content or "").strip() for doc in raw_docs if doc.page_content)
+
     def load_documents_from_folder(self, folder_path: str) -> list[dict]:
         """
         从文件夹加载所有文档并分片

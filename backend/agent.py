@@ -1,7 +1,9 @@
 import asyncio
+import base64
 import json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from dotenv import load_dotenv
 from langchain.agents import create_agent
@@ -10,6 +12,7 @@ from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, AIMe
 
 from cache import redis_cache
 from database import SessionLocal
+from document_loader import DocumentsLoader
 from models import User, ChatSession, ChatMessage
 from tools import search_knowledge_base, web_search, get_last_rag_context, reset_tool_call_guards, set_rag_step_queue
 
@@ -18,6 +21,64 @@ load_dotenv()
 API_KEY = os.getenv("ARK_API_KEY")
 MODEL = os.getenv("MODEL")
 BASE_URL = os.getenv("BASE_URL")
+
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR.parent / "data"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+def process_attachments(session_id: str, filenames: list[str]) -> list[dict]:
+    """处理附件列表，返回 LangChain HumanMessage 的 content blocks。
+
+    - 图片文件：base64 编码为 image_url block
+    - 文档文件：用 DocumentsLoader 解析为文本 block
+    """
+    content_blocks = []
+    loader = DocumentsLoader()
+
+    for filename in filenames:
+        file_path = DATA_DIR / session_id / filename
+        if not file_path.exists():
+            continue
+
+        ext = Path(filename).suffix.lower()
+
+        if ext in IMAGE_EXTENSIONS:
+            with open(file_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            mime_map = {
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif",
+            }
+            mime = mime_map.get(ext, "image/png")
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        else:
+            try:
+                doc_text = loader.load_document_text(str(file_path), filename)
+                if doc_text.strip():
+                    content_blocks.append({
+                        "type": "text",
+                        "text": f"[附件: {filename}]\n{doc_text}",
+                    })
+            except Exception:
+                content_blocks.append({
+                    "type": "text",
+                    "text": f"[附件: {filename} 解析失败]",
+                })
+
+    return content_blocks
+
+
+def _build_user_message(user_text: str, session_id: str, attachment_filenames: list[str] | None) -> HumanMessage:
+    """构建包含附件内容的 HumanMessage。"""
+    if not attachment_filenames:
+        return HumanMessage(content=user_text)
+
+    content_blocks = process_attachments(session_id, attachment_filenames)
+    content_blocks.append({"type": "text", "text": user_text})
+    return HumanMessage(content=content_blocks)
 
 class ConversationStorage:
 
@@ -217,7 +278,7 @@ def create_agent_instance():
             "## 工具使用策略（严格按顺序执行）\n"
             "1. 首先调用 search_knowledge_base 工具检索本地知识库。\n"
             "2. 检索完成后，评估知识库内容是否足以回答用户的问题。\n"
-            "3. 如果知识库内容不足以回答（信息缺失、过时、或未覆盖该主题），则调用 web_search 工具进行联网搜索补充。\n"
+            "3. 如果知识库内容与用户的提问几乎完全不相关，则调用 web_search 工具进行联网搜索补充。\n"
             "4. 如果知识库内容已足够回答，则无需调用 web_search。\n\n"
             "## 回答规范\n"
             "- 来自知识库的内容：直接回答，无需特别标注。\n"
@@ -225,6 +286,7 @@ def create_agent_instance():
             "- 如果知识库和网络都无法回答，请诚实承认并鼓励用户进一步探索。\n\n"
             "## 约束\n"
             "- 不要在同一轮对话中重复调用同一个工具。每个工具每轮最多调用一次。\n"
+            "- 不要频繁的调用联网搜索工具 , 只有当打分模型判断第一次检索不通过并且第二检索效果也不佳的情况才调用联网搜索工具"
             "- 一旦收到工具结果，必须立即基于结果生成最终答案。\n"
             "- 如果工具返回的结果包含「后退提问/解答」（Step-back Question/Answer），请运用该通用原则来推理解答，但不要暴露思维链。\n"
             "- 不要捏造技术事实或伪造面试指南。"
@@ -254,7 +316,7 @@ def summarize_old_messages(model, messages: list) -> str:
     summary = model.invoke(summary_prompt).content
     return summary
 
-def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
+def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: str = "default_session", attachment_filenames: list[str] = None):
     """使用 Agent 处理用户消息并返回响应"""
     messages = storage.load(user_id, session_id)
     # 清理可能残留的 RAG 上下文，避免跨请求污染
@@ -269,7 +331,9 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
         SystemMessage(content=f"之前的对话摘要：\n{summary}")
     ] + messages[40:]
 
-    messages.append(HumanMessage(content=user_text))
+    # 构建带附件的多模态消息发送给 LLM，但保存时只保留纯文本
+    llm_message = _build_user_message(user_text, session_id, attachment_filenames)
+    messages.append(llm_message)
 
     #在这个invoke的过程中可能调用 搜索数据库 设置了rag上下文
     result = agent.invoke(
@@ -296,6 +360,8 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
     rag_context = get_last_rag_context(clear=True)
     rag_trace = rag_context.get("rag_trace") if rag_context else None
 
+    # 保存时将多模态消息替换为纯文本，附件内容不写入数据库
+    messages[-2] = HumanMessage(content=user_text)
 
     #对齐数据长度 只有最后的一条由AI生成的回复才需要rag_trace
     extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
@@ -306,7 +372,7 @@ def chat_with_agent(user_text: str, user_id: str = "default_user", session_id: s
         "rag_trace": rag_trace,
     }
 
-async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", session_id: str = "default_session"):
+async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", session_id: str = "default_session", attachment_filenames: list[str] = None):
     """使用 Agent 处理用户消息并流式返回响应。
 
        架构：使用统一输出队列 + 后台任务，确保 RAG 检索步骤在工具执行期间实时推送，
@@ -334,7 +400,9 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
             SystemMessage(content=f"之前的对话摘要：\n{summary}")
         ] + messages[40:]
 
-    messages.append(HumanMessage(content=user_text))
+    # 构建带附件的多模态消息发送给 LLM，但保存时只保留纯文本
+    llm_message = _build_user_message(user_text, session_id, attachment_filenames)
+    messages.append(llm_message)
 
     full_response = ""
 
@@ -407,7 +475,8 @@ async def chat_with_agent_stream(user_text: str, user_id: str = "default_user", 
     # 发送结束信号
     yield "data: [DONE]\n\n"
 
-    # 保存对话
+    # 保存对话：将多模态消息替换为纯文本，附件内容不写入数据库
+    messages[-1] = HumanMessage(content=user_text)
     messages.append(AIMessage(content=full_response))
     extra_message_data = [None] * (len(messages) - 1) + [{"rag_trace": rag_trace}]
     storage.save(user_id, session_id, messages, extra_message_data=extra_message_data)

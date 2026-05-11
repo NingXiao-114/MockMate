@@ -286,7 +286,14 @@
                             </div>
                         </div>
                         <!-- Content -->
-                        <div v-else class="message-content" v-html="msg.isUser ? escapeHtml(msg.text) : parseMarkdown(msg.text)"></div>
+                        <div v-else class="message-content">
+                            <div v-if="msg.isUser && msg.attachments" class="msg-attachments">
+                                <div v-for="(fname, fi) in msg.attachments" :key="fi" class="msg-att-chip">
+                                    <i class="fas fa-paperclip"></i> {{ fname }}
+                                </div>
+                            </div>
+                            <div v-html="msg.isUser ? escapeHtml(msg.text) : parseMarkdown(msg.text)"></div>
+                        </div>
                         <div v-if="msg.timestamp" class="message-time">{{ formatTime(msg.timestamp) }}</div>
                         <!-- RAG Trace -->
                         <div v-if="!msg.isUser && msg.ragTrace" class="message-meta">
@@ -384,7 +391,22 @@
                 </div>
 
                 <div class="input-area-wrapper">
+                    <div v-if="chatAttachments.length" class="attachment-preview-bar">
+                        <div v-for="(att, idx) in chatAttachments" :key="idx" class="attachment-chip">
+                            <i class="fas fa-paperclip"></i>
+                            <span class="att-name">{{ att.name }}</span>
+                            <span v-if="att.uploading" class="att-progress">{{ att.progress }}%</span>
+                            <span v-else-if="att.error" class="att-error">{{ att.error }}</span>
+                            <button v-else @click="removeChatAttachment(idx)" class="att-remove" title="移除">&times;</button>
+                        </div>
+                    </div>
                     <div class="input-area">
+                        <input type="file" ref="chatFileInput" @change="handleChatAttachmentSelect"
+                               multiple accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.webp,.gif"
+                               style="display:none" />
+                        <button @click="triggerAttachmentInput" class="input-action-btn" title="添加附件" :disabled="isLoading">
+                            <i class="fas fa-paperclip"></i>
+                        </button>
                         <textarea
                             v-model="userInput"
                             @keydown="handleKeyDown"
