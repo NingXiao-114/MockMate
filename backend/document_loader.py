@@ -1,7 +1,35 @@
+import logging
 import os
+import re
 
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, UnstructuredExcelLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+logger = logging.getLogger(__name__)
+
+
+def _parse_markdown_into_sections(markdown_text: str) -> list[dict]:
+    heading_pattern = re.compile(r'^#{1,3}\s+.+', re.MULTILINE)
+    matches = list(heading_pattern.finditer(markdown_text))
+
+    if not matches:
+        text = markdown_text.strip()
+        return [{"text": text, "section_idx": 0}] if text else []
+
+    sections = []
+    if matches[0].start() > 0:
+        preamble = markdown_text[:matches[0].start()].strip()
+        if preamble:
+            sections.append({"text": preamble, "section_idx": 0})
+
+    for i, match in enumerate(matches):
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown_text)
+        section_text = markdown_text[start:end].strip()
+        if section_text:
+            sections.append({"text": section_text, "section_idx": len(sections)})
+
+    return sections
 
 
 class DocumentsLoader:
@@ -119,6 +147,44 @@ class DocumentsLoader:
 
         return root_chunks
 
+    def _load_with_mineru(self, file_path: str, filename: str) -> list[dict]:
+        from mineru_loader import parse_file_with_mineru
+
+        markdown_text = parse_file_with_mineru(
+            file_path=file_path,
+            filename=filename,
+            language=os.getenv("MINERU_LANGUAGE", "ch"),
+            enable_table=os.getenv("MINERU_ENABLE_TABLE", "true").lower() == "true",
+            enable_formula=os.getenv("MINERU_ENABLE_FORMULA", "true").lower() == "true",
+            is_ocr=os.getenv("MINERU_IS_OCR", "false").lower() == "true",
+            poll_timeout=int(os.getenv("MINERU_POLL_TIMEOUT", "300")),
+        )
+
+        file_lower = filename.lower()
+        doc_type = "PDF" if file_lower.endswith(".pdf") else "Word"
+
+        sections = _parse_markdown_into_sections(markdown_text)
+        if not sections:
+            raise ValueError("MinerU 返回内容为空")
+
+        documents = []
+        page_global_chunk_idx = 0
+        for section in sections:
+            base_doc = {
+                "filename": filename,
+                "file_path": file_path,
+                "file_type": doc_type,
+                "page_number": section["section_idx"],
+            }
+            chunks = self._split_page_to_three_level(
+                text=section["text"],
+                base_doc=base_doc,
+                page_global_chunk_idx=page_global_chunk_idx,
+            )
+            page_global_chunk_idx += len(chunks)
+            documents.extend(chunks)
+        return documents
+
     def load_document(self, file_path: str, filename: str) -> list[dict]:
         """
         加载单个文档并分片
@@ -127,6 +193,13 @@ class DocumentsLoader:
         :return: 分片后的文档列表
         """
         file_lower = filename.lower()
+        is_excel = file_lower.endswith((".xlsx", ".xls"))
+
+        if not is_excel:
+            try:
+                return self._load_with_mineru(file_path, filename)
+            except Exception as e:
+                logger.warning("MinerU 解析失败，降级到默认解析器: %s", e)
 
         if file_lower.endswith(".pdf"):
             doc_type = "PDF"
